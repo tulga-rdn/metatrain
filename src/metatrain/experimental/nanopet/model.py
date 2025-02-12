@@ -12,6 +12,7 @@ from metatensor.torch.atomistic import (
     ModelOutput,
     NeighborListOptions,
     System,
+#    register_autograd_neighbors
 )
 
 from ...utils.additive import ZBL, CompositionModel
@@ -29,6 +30,8 @@ from .modules.radial_mask import get_radial_mask
 from .modules.structures import concatenate_structures
 from .modules.transformer import Transformer
 
+from torchpme.calculators import EwaldCalculator
+from torchpme import InversePowerLawPotential, CoulombPotential
 
 class NanoPET(torch.nn.Module):
     """
@@ -154,6 +157,20 @@ class NanoPET(torch.nn.Module):
 
         self.single_label = Labels.single()
 
+        self.charges_map = torch.nn.Linear(
+            self.last_layer_feature_size, 1
+        )
+
+        self.calculator = EwaldCalculator(
+            potential=CoulombPotential(
+                smearing=0.6, 
+                exclusion_radius=self.cutoff),
+            full_neighbor_list=True,
+            lr_wavelength=0.3,
+            prefactor=14,    
+        )
+
+
     def restart(self, dataset_info: DatasetInfo) -> "NanoPET":
         # merge old and new dataset info
         merged_info = self.dataset_info.union(dataset_info)
@@ -254,6 +271,12 @@ class NanoPET(torch.nn.Module):
             names=["system", "atom"],
             values=sample_values,
         )
+
+        nl_list = []
+        for system in systems:
+            nl = system.get_neighbor_list(self.requested_nl)
+            nl_list.append(nl)
+            # register_autograd_neighbors(system, nl)
 
         (
             positions,
@@ -459,6 +482,46 @@ class NanoPET(torch.nn.Module):
                 atomic_properties_tmap_dict[output_name] = metatensor.torch.slice(
                     tmap, axis="samples", selection=selected_atoms
                 )
+
+        atomic_features = atomic_features_dict["energy"] # LLF for energy
+
+        charges = self.charges_map(atomic_features)
+
+        last_len = 0
+        last_len_nl = 0
+        potentials = []
+        for i, system in enumerate(systems):
+            system_charges = charges[last_len:last_len + len(system)]
+            last_len += len(system)
+
+            neighbor_list = nl_list[i]
+            neighbor_indices = neighbor_list.samples.view(["first_atom", "second_atom"]).values
+            neighbor_distances = torch.linalg.norm(neighbor_list.values, dim=1).squeeze(1)
+
+            potential = self.calculator.forward(
+                charges=system_charges,
+                cell=system.cell,
+                positions=system.positions,
+                neighbor_indices=neighbor_indices,
+                neighbor_distances=neighbor_distances,
+            )
+            potentials.append(potential * system_charges)
+        potentials = torch.cat(potentials)
+
+        e_tmap = atomic_properties_tmap_dict["energy"]
+        potentials_tb = [
+            TensorBlock(
+                values=potentials,
+                samples=e_tmap.block().samples,
+                components=e_tmap.block().components,
+                properties=e_tmap.block().properties,
+            )
+        ]
+        potentials_tmap = TensorMap(
+            keys=self.key_labels["energy"],
+            blocks=potentials_tb,
+        )
+        atomic_properties_tmap_dict["energy"] = metatensor.torch.add(e_tmap, potentials_tmap)
 
         for output_name, atomic_property in atomic_properties_tmap_dict.items():
             if outputs[output_name].per_atom:
