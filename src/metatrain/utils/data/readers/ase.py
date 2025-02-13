@@ -15,8 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 def _wrapped_ase_io_read(filename):
+    import numpy
     try:
-        return ase.io.read(filename, ":")
+        atoms = ase.io.read(filename, ":")
+        for atom in atoms:
+            atom.set_pbc(numpy.array([True, True, True]))
+        return atoms
     except Exception as e:
         raise ValueError(f"Failed to read '{filename}' with ASE: {e}") from e
 

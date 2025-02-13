@@ -12,7 +12,6 @@ from metatensor.torch.atomistic import (
     ModelOutput,
     NeighborListOptions,
     System,
-#    register_autograd_neighbors
 )
 
 from ...utils.additive import ZBL, CompositionModel
@@ -160,16 +159,14 @@ class NanoPET(torch.nn.Module):
         self.charges_map = torch.nn.Linear(
             self.last_layer_feature_size, 1
         )
-
         self.calculator = EwaldCalculator(
             potential=CoulombPotential(
                 smearing=0.6, 
                 exclusion_radius=self.cutoff),
             full_neighbor_list=True,
             lr_wavelength=0.3,
-            prefactor=14,    
+            prefactor=14.399484341230986,    
         )
-
 
     def restart(self, dataset_info: DatasetInfo) -> "NanoPET":
         # merge old and new dataset info
@@ -272,11 +269,10 @@ class NanoPET(torch.nn.Module):
             values=sample_values,
         )
 
-        nl_list = []
+        nl_list: List[TensorBlock] = []
         for system in systems:
             nl = system.get_neighbor_list(self.requested_nl)
             nl_list.append(nl)
-            # register_autograd_neighbors(system, nl)
 
         (
             positions,
@@ -488,7 +484,6 @@ class NanoPET(torch.nn.Module):
         charges = self.charges_map(atomic_features)
 
         last_len = 0
-        last_len_nl = 0
         potentials = []
         for i, system in enumerate(systems):
             system_charges = charges[last_len:last_len + len(system)]
